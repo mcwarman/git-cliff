@@ -125,18 +125,24 @@ pub struct Commit<'a> {
 	pub merge_commit:  bool,
 	/// Arbitrary data to be used with the `--from-context` CLI option.
 	pub extra:         Option<Value>,
+	/// Remote metadata of the commit.
+	pub remote:        Option<crate::contributor::RemoteContributor>,
 	/// GitHub metadata of the commit.
 	#[cfg(feature = "github")]
-	pub github:        crate::remote::RemoteContributor,
+	#[deprecated(note = "Use `remote` field instead")]
+	pub github:        crate::contributor::RemoteContributor,
 	/// GitLab metadata of the commit.
 	#[cfg(feature = "gitlab")]
-	pub gitlab:        crate::remote::RemoteContributor,
+	#[deprecated(note = "Use `remote` field instead")]
+	pub gitlab:        crate::contributor::RemoteContributor,
 	/// Gitea metadata of the commit.
 	#[cfg(feature = "gitea")]
-	pub gitea:         crate::remote::RemoteContributor,
+	#[deprecated(note = "Use `remote` field instead")]
+	pub gitea:         crate::contributor::RemoteContributor,
 	/// Bitbucket metadata of the commit.
 	#[cfg(feature = "bitbucket")]
-	pub bitbucket:     crate::remote::RemoteContributor,
+	#[deprecated(note = "Use `remote` field instead")]
+	pub bitbucket:     crate::contributor::RemoteContributor,
 }
 
 impl<'a> From<String> for Commit<'a> {
@@ -166,7 +172,7 @@ impl<'a> From<&GitCommit<'a>> for Commit<'a> {
 	fn from(commit: &GitCommit<'a>) -> Self {
 		Commit {
 			id: commit.id().to_string(),
-			message: commit.message().unwrap_or_default().to_string(),
+			message: commit.message().unwrap_or_default().trim_end().to_string(),
 			author: commit.author().into(),
 			committer: commit.committer().into(),
 			merge_commit: commit.parent_count() > 1,
@@ -189,7 +195,7 @@ impl Commit<'_> {
 	///
 	/// * converts commit to a conventional commit
 	/// * sets the group for the commit
-	/// * extacts links and generates URLs
+	/// * extracts links and generates URLs
 	pub fn process(&self, config: &GitConfig) -> Result<Self> {
 		let mut commit = self.clone();
 		if let Some(preprocessors) = &config.commit_preprocessors {
@@ -275,7 +281,7 @@ impl Commit<'_> {
 		for parser in parsers {
 			let mut regex_checks = Vec::new();
 			if let Some(message_regex) = parser.message.as_ref() {
-				regex_checks.push((message_regex, self.message.to_string()))
+				regex_checks.push((message_regex, self.message.to_string()));
 			}
 			let body = self
 				.conv
@@ -283,7 +289,7 @@ impl Commit<'_> {
 				.and_then(|v| v.body())
 				.map(|v| v.to_string());
 			if let Some(body_regex) = parser.body.as_ref() {
-				regex_checks.push((body_regex, body.clone().unwrap_or_default()))
+				regex_checks.push((body_regex, body.clone().unwrap_or_default()));
 			}
 			if let (Some(footer_regex), Some(footers)) = (
 				parser.footer.as_ref(),
@@ -341,11 +347,9 @@ impl Commit<'_> {
 							}
 							value
 						};
-						self.group =
-							parser.group.as_ref().cloned().map(regex_replace);
-						self.scope =
-							parser.scope.as_ref().cloned().map(regex_replace);
-						self.default_scope = parser.default_scope.as_ref().cloned();
+						self.group = parser.group.clone().map(regex_replace);
+						self.scope = parser.scope.clone().map(regex_replace);
+						self.default_scope.clone_from(&parser.default_scope);
 						return Ok(self);
 					}
 				}
@@ -398,6 +402,7 @@ impl Commit<'_> {
 }
 
 impl Serialize for Commit<'_> {
+	#[allow(deprecated)]
 	fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
 	where
 		S: Serializer,
@@ -420,38 +425,36 @@ impl Serialize for Commit<'_> {
 
 		let mut commit = serializer.serialize_struct("Commit", 9)?;
 		commit.serialize_field("id", &self.id)?;
-		match &self.conv {
-			Some(conv) => {
-				commit.serialize_field("message", conv.description())?;
-				commit.serialize_field("body", &conv.body())?;
-				commit.serialize_field("footers", &SerializeFooters(self))?;
-				commit.serialize_field(
-					"group",
-					self.group.as_ref().unwrap_or(&conv.type_().to_string()),
-				)?;
-				commit.serialize_field(
-					"breaking_description",
-					&conv.breaking_description(),
-				)?;
-				commit.serialize_field("breaking", &conv.breaking())?;
-				commit.serialize_field(
-					"scope",
-					&self
-						.scope
-						.as_deref()
-						.or_else(|| conv.scope().map(|v| v.as_str()))
-						.or(self.default_scope.as_deref()),
-				)?;
-			}
-			None => {
-				commit.serialize_field("message", &self.message)?;
-				commit.serialize_field("group", &self.group)?;
-				commit.serialize_field(
-					"scope",
-					&self.scope.as_deref().or(self.default_scope.as_deref()),
-				)?;
-			}
+		if let Some(conv) = &self.conv {
+			commit.serialize_field("message", conv.description())?;
+			commit.serialize_field("body", &conv.body())?;
+			commit.serialize_field("footers", &SerializeFooters(self))?;
+			commit.serialize_field(
+				"group",
+				self.group.as_ref().unwrap_or(&conv.type_().to_string()),
+			)?;
+			commit.serialize_field(
+				"breaking_description",
+				&conv.breaking_description(),
+			)?;
+			commit.serialize_field("breaking", &conv.breaking())?;
+			commit.serialize_field(
+				"scope",
+				&self
+					.scope
+					.as_deref()
+					.or_else(|| conv.scope().map(|v| v.as_str()))
+					.or(self.default_scope.as_deref()),
+			)?;
+		} else {
+			commit.serialize_field("message", &self.message)?;
+			commit.serialize_field("group", &self.group)?;
+			commit.serialize_field(
+				"scope",
+				&self.scope.as_deref().or(self.default_scope.as_deref()),
+			)?;
 		}
+
 		commit.serialize_field("links", &self.links)?;
 		commit.serialize_field("author", &self.author)?;
 		commit.serialize_field("committer", &self.committer)?;
@@ -466,6 +469,9 @@ impl Serialize for Commit<'_> {
 		commit.serialize_field("gitea", &self.gitea)?;
 		#[cfg(feature = "bitbucket")]
 		commit.serialize_field("bitbucket", &self.bitbucket)?;
+		if let Some(remote) = &self.remote {
+			commit.serialize_field("remote", remote)?;
+		}
 		commit.end()
 	}
 }
@@ -489,7 +495,7 @@ mod test {
 			),
 		];
 		for (commit, is_conventional) in &test_cases {
-			assert_eq!(is_conventional, &commit.clone().into_conventional().is_ok())
+			assert_eq!(is_conventional, &commit.clone().into_conventional().is_ok());
 		}
 		let commit = test_cases[0].0.clone().parse(
 			&[CommitParser {
@@ -585,7 +591,7 @@ mod test {
 			),
 		];
 		for (commit, is_conventional) in &test_cases {
-			assert_eq!(is_conventional, &commit.clone().into_conventional().is_ok())
+			assert_eq!(is_conventional, &commit.clone().into_conventional().is_ok());
 		}
 		let commit = Commit::new(
 			String::from("123123"),

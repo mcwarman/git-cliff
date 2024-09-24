@@ -77,8 +77,12 @@ pub struct ChangelogConfig {
 	pub footer:         Option<String>,
 	/// Trim the template.
 	pub trim:           Option<bool>,
+	/// Always render the body template.
+	pub render_always:  Option<bool>,
 	/// Changelog postprocessors.
 	pub postprocessors: Option<Vec<TextProcessor>>,
+	/// Output file path.
+	pub output:         Option<PathBuf>,
 }
 
 /// Git configuration
@@ -115,6 +119,8 @@ pub struct GitConfig {
 	/// Regex to count matched tags.
 	#[serde(with = "serde_regex", default)]
 	pub count_tags:               Option<Regex>,
+	/// Include only the tags that belong to the current branch.
+	pub use_branch_tags:          Option<bool>,
 	/// Whether to sort tags topologically.
 	pub topo_order:               Option<bool>,
 	/// Sorting of the commits inside sections.
@@ -254,21 +260,17 @@ impl Bump {
 	///
 	/// This function also logs the returned value.
 	pub fn get_initial_tag(&self) -> String {
-		match self.initial_tag.clone() {
-			Some(tag) => {
-				warn!(
-					"No releases found, using initial tag '{tag}' as the next \
-					 version."
-				);
-				tag
-			}
-			None => {
-				warn!(
-					"No releases found, using {DEFAULT_INITIAL_TAG} as the next \
-					 version."
-				);
-				DEFAULT_INITIAL_TAG.into()
-			}
+		if let Some(tag) = self.initial_tag.clone() {
+			warn!(
+				"No releases found, using initial tag '{tag}' as the next version."
+			);
+			tag
+		} else {
+			warn!(
+				"No releases found, using {DEFAULT_INITIAL_TAG} as the next \
+				 version."
+			);
+			DEFAULT_INITIAL_TAG.into()
 		}
 	}
 }
@@ -349,7 +351,7 @@ impl Config {
 	/// Reads the config file contents from project manifest (e.g. Cargo.toml,
 	/// pyproject.toml)
 	pub fn read_from_manifest() -> Result<Option<String>> {
-		for info in (*MANIFEST_INFO).iter() {
+		for info in &(*MANIFEST_INFO) {
 			if info.path.exists() {
 				let contents = fs::read_to_string(&info.path)?;
 				if info.regex.is_match(&contents) {

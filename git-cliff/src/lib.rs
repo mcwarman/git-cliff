@@ -87,7 +87,11 @@ fn process_repository<'a>(
 	config: &mut Config,
 	args: &Args,
 ) -> Result<Vec<Release<'a>>> {
-	let mut tags = repository.tags(&config.git.tag_pattern, args.topo_order)?;
+	let mut tags = repository.tags(
+		&config.git.tag_pattern,
+		args.topo_order,
+		args.use_branch_tags,
+	)?;
 	let skip_regex = config.git.skip_tags.as_ref();
 	let ignore_regex = config.git.ignore_tags.as_ref();
 	let count_tags = config.git.count_tags.as_ref();
@@ -103,7 +107,7 @@ fn process_repository<'a>(
 		let count = count_tags.map_or(true, |r| {
 			let count_tag = r.is_match(name);
 			if count_tag {
-				trace!("Counting release: {}", name)
+				trace!("Counting release: {}", name);
 			}
 			count_tag
 		});
@@ -115,7 +119,7 @@ fn process_repository<'a>(
 
 			let ignore_tag = r.is_match(name);
 			if ignore_tag {
-				trace!("Ignoring release: {}", name)
+				trace!("Ignoring release: {}", name);
 			}
 			ignore_tag
 		});
@@ -235,21 +239,29 @@ fn process_repository<'a>(
 	}
 
 	// Update tags.
+	let mut releases = vec![Release::default()];
+	let mut tag_timestamp = None;
 	if let Some(ref tag) = args.tag {
 		if let Some(commit_id) = commits.first().map(|c| c.id().to_string()) {
 			match tags.get(&commit_id) {
 				Some(tag) => {
-					warn!("There is already a tag ({:?}) for {}", tag, commit_id)
+					warn!("There is already a tag ({}) for {}", tag.name, commit_id);
+					tag_timestamp = Some(commits[0].time().seconds());
 				}
 				None => {
 					tags.insert(commit_id, repository.resolve_tag(tag));
 				}
 			}
+		} else {
+			releases[0].version = Some(tag.to_string());
+			releases[0].timestamp = SystemTime::now()
+				.duration_since(UNIX_EPOCH)?
+				.as_secs()
+				.try_into()?;
 		}
 	}
 
 	// Process releases.
-	let mut releases = vec![Release::default()];
 	let mut previous_release = Release::default();
 	let mut first_processed_tag = None;
 	for git_commit in commits.iter().rev() {
@@ -260,13 +272,16 @@ fn process_repository<'a>(
 		release.repository = Some(repository.path.to_string_lossy().into_owned());
 		if let Some(tag) = tags.get(&commit_id) {
 			release.version = Some(tag.name.to_string());
-			release.message = tag.message.clone();
+			release.message.clone_from(&tag.message);
 			release.commit_id = Some(commit_id);
 			release.timestamp = if args.tag.as_deref() == Some(tag.name.as_str()) {
-				SystemTime::now()
-					.duration_since(UNIX_EPOCH)?
-					.as_secs()
-					.try_into()?
+				match tag_timestamp {
+					Some(timestamp) => timestamp,
+					None => SystemTime::now()
+						.duration_since(UNIX_EPOCH)?
+						.as_secs()
+						.try_into()?,
+				}
 			} else {
 				git_commit.time().seconds()
 			};
@@ -302,13 +317,6 @@ fn process_repository<'a>(
 			.extend(custom_commits.iter().cloned().map(Commit::from));
 	}
 
-	// Set custom message for the latest release.
-	if let Some(message) = &args.with_tag_message {
-		if let Some(latest_release) = releases.iter_mut().last() {
-			latest_release.message = Some(message.to_owned());
-		}
-	}
-
 	// Set the previous release if the first release does not have one set.
 	if releases[0]
 		.previous
@@ -334,7 +342,7 @@ fn process_repository<'a>(
 				commit_id: Some(commit_id.to_string()),
 				version: Some(tag.name.clone()),
 				timestamp: repository
-					.find_commit(commit_id.to_string())
+					.find_commit(commit_id)
 					.map(|v| v.time().seconds())
 					.unwrap_or_default(),
 				..Default::default()
@@ -343,37 +351,26 @@ fn process_repository<'a>(
 		}
 	}
 
+	// Set custom message for the latest release.
+	if let Some(message) = &args.with_tag_message {
+		if let Some(latest_release) = releases
+			.iter_mut()
+			.filter(|release| !release.commits.is_empty())
+			.last()
+		{
+			latest_release.message = Some(message.to_owned());
+		}
+	}
+
 	Ok(releases)
 }
 
-/// Runs `git-cliff`.
-pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
-	// Check if there is a new version available.
-	#[cfg(feature = "update-informer")]
-	check_new_version();
-
-	// Create the configuration file if init flag is given.
-	if let Some(init_config) = args.init {
-		let contents = match init_config {
-			Some(ref name) => BuiltinConfig::get_config(name.to_string())?,
-			None => EmbeddedConfig::get_config()?,
-		};
-		info!(
-			"Saving the configuration file{} to {:?}",
-			init_config.map(|v| format!(" ({v})")).unwrap_or_default(),
-			DEFAULT_CONFIG
-		);
-		fs::write(DEFAULT_CONFIG, contents)?;
-		return Ok(());
-	}
-
-	// Retrieve the built-in configuration.
+/// Returns the parsed configuration file.
+fn parse_config(args: &mut Args) -> Result<Config> {
 	let builtin_config =
 		BuiltinConfig::parse(args.config.to_string_lossy().to_string());
-
-	// Set the working directory.
 	if let Some(ref workdir) = args.workdir {
-		args.config = workdir.join(args.config);
+		args.config = workdir.join(&args.config);
 		match args.repository.as_mut() {
 			Some(repository) => {
 				repository
@@ -382,12 +379,10 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 			}
 			None => args.repository = Some(vec![workdir.clone()]),
 		}
-		if let Some(changelog) = args.prepend {
+		if let Some(changelog) = &args.prepend {
 			args.prepend = Some(workdir.join(changelog));
 		}
 	}
-
-	// Parse the configuration file.
 	let mut path = args.config.clone();
 	if !path.exists() {
 		if let Some(config_path) = dirs::config_dir()
@@ -396,8 +391,6 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 			path = config_path;
 		}
 	}
-
-	// Load the default configuration if necessary.
 	let mut config = if let Ok((config, name)) = builtin_config {
 		info!("Using built-in configuration file: {name}");
 		config
@@ -414,12 +407,38 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 		}
 		EmbeddedConfig::parse()?
 	};
-	if config.changelog.body.is_none() && !args.context {
+	if config.changelog.body.is_none() && !args.context && !args.bumped_version {
 		warn!("Changelog body is not specified, using the default template.");
 		config.changelog.body = EmbeddedConfig::parse()?.changelog.body;
 	}
+	Ok(config)
+}
+
+/// Runs `git-cliff`.
+pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
+	// Check if there is a new version available.
+	#[cfg(feature = "update-informer")]
+	check_new_version();
+
+	// Creates the configuration file.
+	if let Some(init_config) = args.init {
+		let contents = match init_config {
+			Some(ref name) => BuiltinConfig::get_config(name.to_string())?,
+			None => EmbeddedConfig::get_config()?,
+		};
+		info!(
+			"Saving the configuration file{} to {:?}",
+			init_config.map(|v| format!(" ({v})")).unwrap_or_default(),
+			DEFAULT_CONFIG
+		);
+		fs::write(DEFAULT_CONFIG, contents)?;
+		return Ok(());
+	}
+
+	let mut config = parse_config(&mut args)?;
 
 	// Update the configuration based on command line arguments and vice versa.
+	let output = args.output.clone().or(config.changelog.output.clone());
 	match args.strip {
 		Some(Strip::Header) => {
 			config.changelog.header = None;
@@ -441,9 +460,9 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 			)));
 		}
 	}
-	if args.output.is_some() &&
+	if output.is_some() &&
 		args.prepend.is_some() &&
-		args.output.as_ref() == args.prepend.as_ref()
+		output.as_ref() == args.prepend.as_ref()
 	{
 		return Err(Error::ArgumentError(String::from(
 			"'-o' and '-p' can only be used together if they point to different \
@@ -464,6 +483,13 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 			args.topo_order = topo_order;
 		}
 	}
+
+	if !args.use_branch_tags {
+		if let Some(use_branch_tags) = config.git.use_branch_tags {
+			args.use_branch_tags = use_branch_tags;
+		}
+	}
+
 	if args.github_token.is_some() {
 		config.remote.github.token.clone_from(&args.github_token);
 	}
@@ -528,7 +554,7 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 
 	// Process commits and releases for the changelog.
 	if let Some(BumpOption::Specific(bump_type)) = args.bump {
-		config.bump.bump_type = Some(bump_type)
+		config.bump.bump_type = Some(bump_type);
 	}
 
 	// Generate changelog from context.
@@ -539,7 +565,7 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 			Box::new(File::open(context_path)?)
 		};
 		let mut changelog = Changelog::from_context(&mut input, &config)?;
-		changelog.add_remote_data()?;
+		changelog.add_remote_context()?;
 		changelog
 	} else {
 		// Process the repositories.
@@ -568,7 +594,7 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 						sha: Some(sha1.to_string()),
 						skip: Some(true),
 						..Default::default()
-					})
+					});
 				}
 			}
 
@@ -611,7 +637,7 @@ pub fn run<W: io::Write>(mut args: Args, mut out: W) -> Result<()> {
 		let mut out = io::BufWriter::new(File::create(path)?);
 		changelog.prepend(changelog_before, &mut out)?;
 	}
-	if args.output.is_some() || args.prepend.is_none() {
+	if output.is_some() || args.prepend.is_none() {
 		changelog.generate(&mut out)?;
 	}
 

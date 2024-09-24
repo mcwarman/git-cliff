@@ -240,6 +240,9 @@ pub struct Args {
 	/// Sorts the tags topologically.
 	#[arg(long, help_heading = Some("FLAGS"))]
 	pub topo_order:       bool,
+	/// Include only the tags that belong to the current branch.
+	#[arg(long, help_heading = Some("FLAGS"))]
+	pub use_branch_tags:  bool,
 	/// Disables the external command execution.
 	#[arg(long, help_heading = Some("FLAGS"))]
 	pub no_exec:          bool,
@@ -312,7 +315,7 @@ pub struct Args {
 		hide = !cfg!(feature = "gitea"),
 	)]
 	pub gitea_token:      Option<SecretString>,
-	/// Sets the GitLab repository.
+	/// Sets the Gitea repository.
 	#[arg(
 		long,
 		env = "GITEA_REPO",

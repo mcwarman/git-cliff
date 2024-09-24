@@ -55,20 +55,16 @@ impl<'a> Changelog<'a> {
 		Ok(Self {
 			releases,
 			header_template: match &config.changelog.header {
-				Some(header) => Some(Template::new(header.to_string(), trim)?),
+				Some(header) => {
+					Some(Template::new("header", header.to_string(), trim)?)
+				}
 				None => None,
 			},
-			body_template: Template::new(
-				config
-					.changelog
-					.body
-					.as_deref()
-					.unwrap_or_default()
-					.to_string(),
-				trim,
-			)?,
+			body_template: get_body_template(config, trim)?,
 			footer_template: match &config.changelog.footer {
-				Some(footer) => Some(Template::new(footer.to_string(), trim)?),
+				Some(footer) => {
+					Some(Template::new("footer", footer.to_string(), trim)?)
+				}
 				None => None,
 			},
 			config,
@@ -100,7 +96,7 @@ impl<'a> Changelog<'a> {
 
 	/// Processes a single commit and returns/logs the result.
 	fn process_commit(
-		commit: Commit<'a>,
+		commit: &Commit<'a>,
 		git_config: &GitConfig,
 	) -> Option<Commit<'a>> {
 		match commit.process(git_config) {
@@ -126,7 +122,7 @@ impl<'a> Changelog<'a> {
 				.commits
 				.iter()
 				.cloned()
-				.filter_map(|commit| Self::process_commit(commit, &self.config.git))
+				.filter_map(|commit| Self::process_commit(&commit, &self.config.git))
 				.flat_map(|commit| {
 					if self.config.git.split_commits.unwrap_or(false) {
 						commit
@@ -136,7 +132,7 @@ impl<'a> Changelog<'a> {
 								let mut c = commit.clone();
 								c.message = line.to_string();
 								if !c.message.is_empty() {
-									Self::process_commit(c, &self.config.git)
+									Self::process_commit(&c, &self.config.git)
 								} else {
 									None
 								}
@@ -152,7 +148,7 @@ impl<'a> Changelog<'a> {
 
 	/// Processes the releases and filters them out based on the configuration.
 	fn process_releases(&mut self) {
-		debug!("Processing the releases...");
+		debug!("Processing {} release(s)...", self.releases.len());
 		let skip_regex = self.config.git.skip_tags.as_ref();
 		let mut skipped_tags = Vec::new();
 		self.releases = self
@@ -162,21 +158,24 @@ impl<'a> Changelog<'a> {
 			.rev()
 			.filter(|release| {
 				if release.commits.is_empty() {
-					if let Some(version) = release.version.as_ref().cloned() {
+					if let Some(version) = release.version.clone() {
 						trace!("Release doesn't have any commits: {}", version);
 					}
-					false
+					match &release.previous {
+						Some(prev_release) if prev_release.commits.is_empty() => {
+							self.config.changelog.render_always.unwrap_or(false)
+						}
+						_ => false,
+					}
 				} else if let Some(version) = &release.version {
-					!skip_regex
-						.map(|r| {
-							let skip_tag = r.is_match(version);
-							if skip_tag {
-								skipped_tags.push(version.clone());
-								trace!("Skipping release: {}", version)
-							}
-							skip_tag
-						})
-						.unwrap_or_default()
+					!skip_regex.is_some_and(|r| {
+						let skip_tag = r.is_match(version);
+						if skip_tag {
+							skipped_tags.push(version.clone());
+							trace!("Skipping release: {}", version);
+						}
+						skip_tag
+					})
 				} else {
 					true
 				}
@@ -430,13 +429,20 @@ impl<'a> Changelog<'a> {
 		}
 	}
 
-	/// Adds remote data (e.g. GitHub commits) to the releases.
-	pub fn add_remote_data(&mut self) -> Result<()> {
-		debug!("Adding remote data...");
+	/// Adds information about the remote to the template context.
+	pub fn add_remote_context(&mut self) -> Result<()> {
 		self.additional_context.insert(
 			"remote".to_string(),
 			serde_json::to_value(self.config.remote.clone())?,
 		);
+		Ok(())
+	}
+
+	/// Adds remote data (e.g. GitHub commits) to the releases.
+	pub fn add_remote_data(&mut self) -> Result<()> {
+		debug!("Adding remote data...");
+		self.add_remote_context()?;
+
 		#[cfg(feature = "github")]
 		let (github_commits, github_pull_requests) = if self.config.remote.github.is_set()
 		{
@@ -468,7 +474,8 @@ impl<'a> Changelog<'a> {
 			} else {
 				(vec![], vec![])
 			};
-		for release in self.releases.iter_mut() {
+		#[cfg(feature = "remote")]
+		for release in &mut self.releases {
 			#[cfg(feature = "github")]
 			release.update_github_metadata(
 				github_commits.clone(),
@@ -605,6 +612,29 @@ impl<'a> Changelog<'a> {
 	}
 }
 
+fn get_body_template(config: &Config, trim: bool) -> Result<Template> {
+	let template_str = config
+		.changelog
+		.body
+		.as_deref()
+		.unwrap_or_default()
+		.to_string();
+	let template = Template::new("body", template_str, trim)?;
+	let deprecated_vars = [
+		"commit.github",
+		"commit.gitea",
+		"commit.gitlab",
+		"commit.bitbucket",
+	];
+	if template.contains_variable(&deprecated_vars) {
+		warn!(
+			"Variables {deprecated_vars:?} are deprecated and will be removed in \
+			 the future. Use `commit.remote` instead."
+		);
+	}
+	Ok(template)
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;
@@ -645,6 +675,8 @@ mod test {
 					replace:         Some(String::from("exciting")),
 					replace_command: None,
 				}]),
+				render_always:  None,
+				output:         None,
 			},
 			git:       GitConfig {
 				conventional_commits:     Some(true),
@@ -798,6 +830,7 @@ mod test {
 				skip_tags:                Regex::new("v3.*").ok(),
 				ignore_tags:              None,
 				count_tags:               None,
+				use_branch_tags:          Some(false),
 				topo_order:               Some(false),
 				sort_commits:             Some(String::from("oldest")),
 				link_parsers:             None,
@@ -1074,7 +1107,7 @@ mod test {
 
 		if let Some(parsers) = config.git.commit_parsers.as_mut() {
 			for parser in parsers.iter_mut().filter(|p| p.footer.is_some()) {
-				parser.skip = Some(true)
+				parser.skip = Some(true);
 			}
 		}
 

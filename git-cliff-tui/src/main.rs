@@ -47,13 +47,11 @@ fn main() -> Result<()> {
 	}
 
 	// Add the configuration file from the command-line arguments.
-	if &args.config != &PathBuf::from("cliff.toml") {
-		if args.config.exists() {
-			state.configs.insert(0, Config {
-				file: args.config.to_string_lossy().to_string(),
-				..Default::default()
-			});
-		}
+	if args.config != PathBuf::from("cliff.toml") && args.config.exists() {
+		state.configs.insert(0, Config {
+			file: args.config.to_string_lossy().to_string(),
+			..Default::default()
+		});
 	}
 
 	// Initialize the terminal user interface.
@@ -112,11 +110,11 @@ fn main() -> Result<()> {
 				state.args.config =
 					PathBuf::from(state.configs[state.selected_config].file.clone());
 				thread::spawn(move || {
-					let mut output = Vec::new();
+					let mut out = Vec::new();
 					sender
-						.send(match git_cliff::run(args, &mut output) {
+						.send(match git_cliff::run(args, &mut out) {
 							Ok(()) => Event::RenderMarkdown(
-								String::from_utf8_lossy(&output).to_string(),
+								String::from_utf8_lossy(&out).to_string(),
 							),
 							Err(e) => Event::Error(e.to_string()),
 						})
