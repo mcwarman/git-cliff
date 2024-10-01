@@ -113,7 +113,7 @@ fn main() -> Result<()> {
 				let args = state.args.clone();
 				state.is_generating = true;
 				state.args.config =
-					PathBuf::from(state.configs[state.selected_config].file.clone());
+					PathBuf::from(state.configs[state.selected_index].file.clone());
 				thread::spawn(move || {
 					let mut out = Vec::new();
 					sender
