@@ -137,32 +137,32 @@ impl Repository {
 			(Some(include_pattern), Some(exclude_pattern)) => {
 				// check if the commit has any changed files that match any of the
 				// include patterns and non of the exclude patterns.
-				return changed_files.iter().any(|path| {
+				changed_files.iter().any(|path| {
 					include_pattern
 						.iter()
 						.any(|pattern| pattern.matches_path(path)) &&
 						!exclude_pattern
 							.iter()
 							.any(|pattern| pattern.matches_path(path))
-				});
+				})
 			}
 			(Some(include_pattern), None) => {
 				// check if the commit has any changed files that match the include
 				// patterns.
-				return changed_files.iter().any(|path| {
+				changed_files.iter().any(|path| {
 					include_pattern
 						.iter()
 						.any(|pattern| pattern.matches_path(path))
-				});
+				})
 			}
 			(None, Some(exclude_pattern)) => {
 				// check if the commit has at least one changed file that does not
 				// match all exclude patterns.
-				return changed_files.iter().any(|path| {
+				changed_files.iter().any(|path| {
 					!exclude_pattern
 						.iter()
 						.any(|pattern| pattern.matches_path(path))
-				});
+				})
 			}
 			(None, None) => true,
 		}
@@ -249,10 +249,10 @@ impl Repository {
 						return 0;
 					}
 					let name = entry.name().expect("failed to get entry name");
-					let entry_path = if dir != "," {
-						format!("{dir}/{name}")
-					} else {
+					let entry_path = if dir == "," {
 						name.to_string()
+					} else {
+						format!("{dir}/{name}")
 					};
 					changed_files.push(entry_path.into());
 					0
@@ -310,12 +310,12 @@ impl Repository {
 		None
 	}
 
-	/// Decide whether to include tag
+	/// Decide whether to include tag.
 	///
 	/// `head_commit` is the `latest` commit to generate changelog. It can be a
 	/// branch head or a detached head. `tag_commit` is a tagged commit. If the
-	/// commit is in the descendant graph of the head_commit or is the
-	/// head_commit itself, Changelog should include the tag.
+	/// commit is in the descendant graph of the `head_commit` or is the
+	/// `head_commit` itself, Changelog should include the tag.
 	fn should_include_tag(
 		&self,
 		head_commit: &Commit,

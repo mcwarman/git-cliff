@@ -146,6 +146,29 @@ pub struct RemoteConfig {
 	pub bitbucket: Remote,
 }
 
+impl RemoteConfig {
+	/// Returns `true` if any remote is set.
+	pub fn is_any_set(&self) -> bool {
+		#[cfg(feature = "github")]
+		if self.github.is_set() {
+			return true;
+		}
+		#[cfg(feature = "gitlab")]
+		if self.gitlab.is_set() {
+			return true;
+		}
+		#[cfg(feature = "gitea")]
+		if self.gitea.is_set() {
+			return true;
+		}
+		#[cfg(feature = "bitbucket")]
+		if self.bitbucket.is_set() {
+			return true;
+		}
+		false
+	}
+}
+
 /// A single remote.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Remote {
@@ -304,7 +327,7 @@ pub struct CommitParser {
 	pub pattern:       Option<Regex>,
 }
 
-/// TextProcessor, e.g. for modifying commit messages.
+/// `TextProcessor`, e.g. for modifying commit messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextProcessor {
 	/// Regex for matching a text to replace.
